@@ -12,6 +12,13 @@ from types import SimpleNamespace
 import copy
 
 import torch
+
+# Default ImageBind checkpoint location: <ImageBind-main>/.checkpoints/imagebind_huge.pth
+# Override with the IMAGEBIND_CKPT environment variable.
+IMAGEBIND_CKPT_PATH = os.environ.get(
+    "IMAGEBIND_CKPT",
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", ".checkpoints", "imagebind_huge.pth"),
+)
 import torch.nn as nn
 import torch.nn.functional as F 
 
@@ -782,7 +789,7 @@ def imagebind_huge(
 
     def initialize_imagebind_weights(model):
         imagebind_model_dict = model.state_dict()
-        pretrained_path = '/root/autodl-tmp/OV_AVEL/proposed_method/ImageBind-main/.checkpoints/imagebind_huge.pth'
+        pretrained_path = IMAGEBIND_CKPT_PATH
         pretrained_state_dicts = torch.load(pretrained_path)
         # pretrained_state_dicts = torch.load(".checkpoints/imagebind_huge.pth")
         state_dict = {k : v for k, v in pretrained_state_dicts.items() if k in imagebind_model_dict.keys()}
@@ -793,16 +800,16 @@ def imagebind_huge(
         return model
 
     if pretrained:
-        pretrained_path = '/root/autodl-tmp/OV_AVEL/proposed_method/ImageBind-main/.checkpoints/imagebind_huge.pth'
+        pretrained_path = IMAGEBIND_CKPT_PATH
         if not os.path.exists(pretrained_path):
         # if not os.path.exists(".checkpoints/imagebind_huge.pth"):
             print(
-                "Downloading imagebind weights to .checkpoints/imagebind_huge.pth ..."
+                f"Downloading imagebind weights to {pretrained_path} ..."
             )
-            os.makedirs(".checkpoints", exist_ok=True)
+            os.makedirs(os.path.dirname(pretrained_path), exist_ok=True)
             torch.hub.download_url_to_file(
                 "https://dl.fbaipublicfiles.com/imagebind/imagebind_huge.pth",
-                ".checkpoints/imagebind_huge.pth",
+                pretrained_path,
                 progress=True,
             )
 

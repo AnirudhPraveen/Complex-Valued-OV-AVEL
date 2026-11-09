@@ -1,3 +1,4 @@
+import os
 from easydict import EasyDict as edict
 import yaml
 import pdb
@@ -8,12 +9,18 @@ default config
 cfg = edict()
 cfg.TRAIN_BG_CLASS_ID = 46 # train
 cfg.TOTAL_BG_CLASS_ID = 67 # total
-cfg.DATA_BASE_DIR = "/root/autodl-tmp/OV_AVEL/ovave_dataset_preprocessed"
-cfg.META_CSV_PATH = "/root/autodl-tmp/OV_AVEL/ovave_dataset_meta.csv"
-# cfg.META_CSV_PATH = "/root/autodl-tmp/OV_AVEL/ovave_trainratio0.75_meta.csv"
-cfg.ANNO_JSON_PATH = "/root/autodl-tmp/OV_AVEL/released_ovavel_dataset_anno.json"
-cfg.TOTAL_CLOSE_OPEN_CATEGORY_CSV_PATH = "/root/autodl-tmp/OV_AVEL/ovave_total_close_open_categories.csv"
-cfg.TRAIN_CLOSE_CATEGORY_CSV_PATH = "/root/autodl-tmp/OV_AVEL/ovave_train_close_categories.csv"
+# Paths are resolved relative to the repository root so the code runs from any clone.
+# Override with environment variables if your data lives elsewhere:
+#   OVAVEL_DATA_DIR  -> preprocessed dataset (default: <repo>/ovave_dataset_preprocessed)
+#   OVAVEL_META_DIR  -> meta/annotation files  (default: <repo>/meta_anno_files)
+_REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+_META_DIR = os.environ.get("OVAVEL_META_DIR", os.path.join(_REPO_ROOT, "meta_anno_files"))
+cfg.DATA_BASE_DIR = os.environ.get("OVAVEL_DATA_DIR", os.path.join(_REPO_ROOT, "ovave_dataset_preprocessed"))
+cfg.META_CSV_PATH = os.path.join(_META_DIR, "ovave_dataset_meta.csv")
+# cfg.META_CSV_PATH = os.path.join(_META_DIR, "ovave_trainratio0.75_meta.csv")
+cfg.ANNO_JSON_PATH = os.path.join(_META_DIR, "released_ovavel_dataset_anno.json")
+cfg.TOTAL_CLOSE_OPEN_CATEGORY_CSV_PATH = os.path.join(_META_DIR, "ovave_total_close_open_categories.csv")
+cfg.TRAIN_CLOSE_CATEGORY_CSV_PATH = os.path.join(_META_DIR, "ovave_train_close_categories.csv")
 
 #### spatial attention
 cfg.SA = edict()

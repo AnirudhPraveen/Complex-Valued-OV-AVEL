@@ -24,6 +24,28 @@ The proposed OV-AVEBench dataset is available now. You may directly download the
 
 Download the ImageBind_Huge from https://github.com/facebookresearch/ImageBind/tree/main
 
+### Expected layout
+
+All paths are resolved relative to the repository, so no code edits are needed if you use this layout:
+
+```
+OV-AVEL/
+├── meta_anno_files/                 # included in the repo
+├── ovave_dataset_preprocessed/      # downloaded dataset (or a symlink to it)
+└── proposed_method/ImageBind-main/
+    └── .checkpoints/imagebind_huge.pth   # auto-downloaded on first run if missing
+```
+
+If your data or weights live elsewhere, set these environment variables instead:
+
+| Variable | Default |
+|---|---|
+| `OVAVEL_DATA_DIR` | `<repo>/ovave_dataset_preprocessed` |
+| `OVAVEL_META_DIR` | `<repo>/meta_anno_files` |
+| `IMAGEBIND_CKPT` | `<repo>/proposed_method/ImageBind-main/.checkpoints/imagebind_huge.pth` |
+
+Run the scripts below from `proposed_method/ImageBind-main/`.
+
 
 
 ## Training-free Baseline

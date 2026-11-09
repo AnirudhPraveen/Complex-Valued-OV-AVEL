@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.py[cod]
+
+# macOS metadata
+.DS_Store
+._*
+
+# Dataset (download separately, see README)
+/ovave_dataset_preprocessed
+
+# Pretrained weights / model checkpoints (download separately, see README)
+.checkpoints/*
+!.checkpoints/readme.txt
+*.pth
+*.pth.tar
+
+# Experiment outputs
+ExpResults/
+logs/

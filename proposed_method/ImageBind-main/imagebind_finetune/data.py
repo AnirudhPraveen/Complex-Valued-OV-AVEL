@@ -1,3 +1,4 @@
+import os
 #!/usr/bin/env python3
 # Portions Copyright (c) Meta Platforms, Inc. and affiliates.
 # All rights reserved.
@@ -25,7 +26,7 @@ import pdb
 
 DEFAULT_AUDIO_FRAME_SHIFT_MS = 10  # in milliseconds
 
-BPE_PATH = "bpe/bpe_simple_vocab_16e6.txt.gz"
+BPE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "bpe", "bpe_simple_vocab_16e6.txt.gz")
 
 
 def waveform2melspec(waveform, sample_rate, num_mel_bins, target_length):
