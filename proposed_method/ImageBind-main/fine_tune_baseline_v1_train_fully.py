@@ -54,14 +54,17 @@ torch.backends.cudnn.benchmark = False
 
 # select GPUs
 # os.environ['CUDA_DEVICE_ORDER'] = "PCI_BUS_ID"
-# os.environ['CUDA_VISIBLE_DEVICES'] = args.gpu
+os.environ['CUDA_VISIBLE_DEVICES'] = "0"
 
 '''Create snapshot_pred dir for copying code and saving models '''
 if not os.path.exists(args.snapshot_pref):
     os.makedirs(args.snapshot_pref, exist_ok=True)
 
-if os.path.isfile(args.resume):
-    args.snapshot_pref = os.path.dirname(args.resume)
+# Bug fix (matches fine_tune_baseline_v1_train_fully_av.py): do NOT clobber
+# --snapshot_pref with the resume ckpt's dir. That sent every eval log into
+# the train dir, breaking per-split eval orchestrators.
+# if os.path.isfile(args.resume):
+#     args.snapshot_pref = os.path.dirname(args.resume)
 
 logger = Prepare_logger(args, eval=args.evaluate)
 
@@ -179,6 +182,8 @@ def main():
             params.requires_grad = True
         elif 'temporal_av_layer' in name:
             params.requires_grad = True
+        elif 'temporal_imag_vision_layer' in name:
+            params.requires_grad = True
         elif 'task_res' in name:
             params.requires_grad = True
             # learned_parameters.append(params)
@@ -201,6 +206,7 @@ def main():
         logger.info(f"\nLoading Checkpoint: {args.resume}\n")
         mainModel.load_state_dict(torch.load(args.resume))
     elif args.resume != "" and (not os.path.isfile(args.resume)):
+        print(f"resume argument: {args.resume}")
         raise FileNotFoundError
 
 
@@ -253,14 +259,25 @@ def train_epoch(model, train_dataloader, criterion, criterion_event, optimizer, 
 
         data_time.update(time.time() - end_time)
         '''Feed input to model'''
-        audio, visual, text, full_label, avc_label, category_label, vid_name = batch_data
+        if cfg.DEPTH.ENABLED:
+            audio, visual, depth, text, full_label, avc_label, category_label, vid_name = batch_data
+            depth_inputs = depth.cuda()  # [bs, 10, 1, 224, 224]
+            visual_imag_inputs = None
+        elif cfg.IHSV.ENABLED:
+            audio, visual, visual_imag, text, full_label, avc_label, category_label, vid_name = batch_data
+            visual_imag_inputs = visual_imag.cuda()  # [bs, 10, 3, 224, 224]
+            depth_inputs = None
+        else:
+            audio, visual, text, full_label, avc_label, category_label, vid_name = batch_data
+            visual_imag_inputs = None
+            depth_inputs = None
         audio_inputs = audio.squeeze(1).cuda()  # [bs, 10, 1, 128, 204]
         visual_inputs = visual.cuda() # [bs, 10, 3, 224, 224]
         text_inputs = text[0].cuda() # [46+1, 77]
         avc_labels = avc_label.cuda() # [bs, 10] 0 or 1
         full_labels = full_label.cuda() # [bs, 10] category id for CE loss
         category_labels = category_label.squeeze(1).cuda() # [bs]
-        
+
 
         """forward"""
         bs = visual_inputs.size(0)
@@ -269,6 +286,10 @@ def train_epoch(model, train_dataloader, criterion, criterion_event, optimizer, 
             ModalityType.VISION: visual_inputs.cuda(), # [bs, 10, 3, 224, 224]
             ModalityType.AUDIO: audio_inputs.cuda(), # [bs, 10, 1, 128, 204]
         }
+        if depth_inputs is not None:
+            inputs[ModalityType.DEPTH] = depth_inputs  # [bs, 10, 1, 224, 224]
+        if visual_imag_inputs is not None:
+            inputs[ModalityType.VISION_IMAG] = visual_imag_inputs  # [bs, 10, 3, 224, 224]
         # with torch.no_grad():
         embeddings = model(inputs) #todo
         audio_feas = embeddings['audio'] # [bs, 10, 1024], without normalization
@@ -277,6 +298,17 @@ def train_epoch(model, train_dataloader, criterion, criterion_event, optimizer, 
         text_feas = text_feas.unsqueeze(0).repeat(bs, 1, 1) # [bs, 46+1, 1024]
         # pred_logits = embeddings['pred'] # [bs, 10, 46+1], without sigmoid
 
+        # iHSV: imaginary visual x text similarity
+        simm_imag_vt = None
+        if ModalityType.VISION_IMAG in embeddings:
+            imag_visual_feas = embeddings[ModalityType.VISION_IMAG]  # [bs, 10, 1024]
+            simm_imag_vt = compute_cross_modal_similarity(imag_visual_feas, text_feas)  # [bs, 10, 46+1]
+
+        # DEPTH: depth x text similarity
+        simm_dt = None
+        if ModalityType.DEPTH in embeddings:
+            depth_feas = embeddings[ModalityType.DEPTH]  # [bs, 10, 1024]
+            simm_dt = compute_cross_modal_similarity(depth_feas, text_feas)  # [bs, 10, 46+1]
 
         #! GEN1: generate AVE prediction logits
         simm_at = compute_cross_modal_similarity(audio_feas, text_feas) # [bs, 10, 46+1]
@@ -285,8 +317,7 @@ def train_epoch(model, train_dataloader, criterion, criterion_event, optimizer, 
         # min-max normalization
         x_min = (pred_logits.min(-1)[0]).unsqueeze(-1) # [bs, 10, 1]
         x_max = (pred_logits.max(-1)[0]).unsqueeze(-1) # [bs, 10, 1]
-        # pred_logits = (pred_logits - x_min) / (x_max - x_min)
-        pred_logits = (pred_logits - x_min) / (x_max - x_min + 1e-8) # for spatialand temoral
+        pred_logits = (pred_logits - x_min) / (x_max - x_min + 1e-8)
         # pdb.set_trace()
         #! GEN2: generate AVE prediction logits
         # simm_at = compute_cross_modal_similarity(audio_feas, text_feas) # [bs, 10, 46+1]
@@ -304,6 +335,7 @@ def train_epoch(model, train_dataloader, criterion, criterion_event, optimizer, 
 
 
         loss = criterion_event(pred_logits.permute(0, 2, 1), full_labels)
+
         loss.backward()
 
 
@@ -422,14 +454,25 @@ def validate_epoch(model, val_dataloader, criterion, criterion_event, epoch, eva
         data_time.update(time.time() - end_time)
 
         '''Feed input to model'''
-        audio, visual, text, full_label, avc_label, category_label, vid_name = batch_data
+        if cfg.DEPTH.ENABLED:
+            audio, visual, depth, text, full_label, avc_label, category_label, vid_name = batch_data
+            depth_inputs = depth.cuda()  # [bs, 10, 1, 224, 224]
+            visual_imag_inputs = None
+        elif cfg.IHSV.ENABLED:
+            audio, visual, visual_imag, text, full_label, avc_label, category_label, vid_name = batch_data
+            visual_imag_inputs = visual_imag.cuda()
+            depth_inputs = None
+        else:
+            audio, visual, text, full_label, avc_label, category_label, vid_name = batch_data
+            visual_imag_inputs = None
+            depth_inputs = None
         audio_inputs = audio.squeeze(1).cuda()  # [bs, 10, 1, 128, 204]
         visual_inputs = visual.cuda() # [bs, 10, 3, 224, 224]
         text_inputs = text[0].cuda() # [46/67, 77]
         avc_labels = avc_label.cuda() # [bs, 10], 0 or 1
         category_labels = category_label.squeeze(1).cuda() # [bs]
         full_labels = full_label.cuda() # [bs, 10], class ids
-        
+
 
         bs = visual_inputs.size(0)
         inputs = {
@@ -437,6 +480,10 @@ def validate_epoch(model, val_dataloader, criterion, criterion_event, epoch, eva
             ModalityType.VISION: visual_inputs.cuda(), # [bs, 10, 3, 224, 224]
             ModalityType.AUDIO: audio_inputs.cuda(), # [bs, 10, 1, 128, 204]
         }
+        if depth_inputs is not None:
+            inputs[ModalityType.DEPTH] = depth_inputs  # [bs, 10, 1, 224, 224]
+        if visual_imag_inputs is not None:
+            inputs[ModalityType.VISION_IMAG] = visual_imag_inputs
         with torch.no_grad():
             embeddings = model(inputs)
         audio_feas = embeddings['audio'] # [bs, 10, 1024]
@@ -445,6 +492,18 @@ def validate_epoch(model, val_dataloader, criterion, criterion_event, epoch, eva
         text_feas = text_feas.unsqueeze(0).repeat(bs, 1, 1) # [bs, 67+1, 1024]
         # pred_logits = embeddings['pred'] # [bs, 10, 67+1]
 
+        # iHSV: imaginary visual x text similarity
+        simm_imag_vt = None
+        if ModalityType.VISION_IMAG in embeddings:
+            imag_visual_feas = embeddings[ModalityType.VISION_IMAG]  # [bs, 10, 1024]
+            simm_imag_vt = compute_cross_modal_similarity(imag_visual_feas, text_feas)  # [bs, 10, 67+1]
+
+        # DEPTH: depth x text similarity
+        simm_dt = None
+        if ModalityType.DEPTH in embeddings:
+            depth_feas = embeddings[ModalityType.DEPTH]  # [bs, 10, 1024]
+            simm_dt = compute_cross_modal_similarity(depth_feas, text_feas)  # [bs, 10, 67+1]
+
         #! GEN1: generate AVE prediction logits
         simm_at = compute_cross_modal_similarity(audio_feas, text_feas) # [bs, 10, 46+1]
         simm_vt = compute_cross_modal_similarity(visual_feas, text_feas) # [bs, 10, 46+1]
@@ -452,8 +511,7 @@ def validate_epoch(model, val_dataloader, criterion, criterion_event, epoch, eva
         # min-max normalization
         x_min = (pred_logits.min(-1)[0]).unsqueeze(-1) # [bs, 10, 1]
         x_max = (pred_logits.max(-1)[0]).unsqueeze(-1) # [bs, 10, 1]
-        # pred_logits = (pred_logits - x_min) / (x_max - x_min)
-        pred_logits = (pred_logits - x_min) / (x_max - x_min + 1e-8) # for spatial and temoral
+        pred_logits = (pred_logits - x_min) / (x_max - x_min + 1e-8)
         # pdb.set_trace()
         #! GEN2: generate AVE prediction logits
         # simm_at = compute_cross_modal_similarity(audio_feas, text_feas) # [bs, 10, 46+1]
@@ -494,6 +552,7 @@ def validate_epoch(model, val_dataloader, criterion, criterion_event, epoch, eva
             seg_fscore.update(seg_f, n=1)
             eve_fscore.update(eve_f, n=1)
         else:
+            # breakpoint()
             loss = criterion_event(pred_logits.permute(0, 2, 1), full_labels)
             acc = compute_accuracy_supervised_v1(pred_logits, full_labels, bg_flag=cfg.TOTAL_BG_CLASS_ID)
             accuracy.update(acc.item(), bs * 10)

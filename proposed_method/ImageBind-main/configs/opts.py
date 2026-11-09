@@ -53,4 +53,18 @@ parser.add_argument('--val_print_freq', type=int, default=1)
 parser.add_argument('--save_freq', type=int, default=1)
 parser.add_argument('--eval_freq', type=int, default=1)
 
+# AV fusion mode: 'none' (z-score+sigmoid average), 'real' (RealCNN),
+# 'complex' (ComplexCNN). Omit flag => fall back to cfg.FUSION_CNN_ENABLED.
+parser.add_argument('--fusion', type=str, default=None,
+                    choices=['none', 'real', 'complex'])
+
+# FCCN auxiliary phase loss overrides (omit flag = leave cfg.FCCN_LOSS unchanged).
+parser.add_argument('--fccn_enabled', type=str, default=None,
+                    choices=['true', 'false'])
+parser.add_argument('--fccn_mode', type=str, default=None,
+                    choices=['fccn', 'cosine', 'coherence'])
+parser.add_argument('--fccn_lambda', type=float, default=None)
+parser.add_argument('--fccn_mask_bg', type=str, default=None,
+                    choices=['true', 'false'])
+
 

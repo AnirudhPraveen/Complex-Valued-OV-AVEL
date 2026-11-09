@@ -18,3 +18,11 @@ __pycache__/
 # Experiment outputs
 ExpResults/
 logs/
+
+# Other datasets / generated data
+/AVE_Dataset
+spectrograms/
+
+# CycleGAN retraining outputs (the shipped generator is checkpoints/cyclegan_if2mel.pt)
+proposed_method/ImageBind-main/checkpoints/*
+!proposed_method/ImageBind-main/checkpoints/cyclegan_if2mel.pt

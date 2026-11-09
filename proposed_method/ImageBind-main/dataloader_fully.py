@@ -55,6 +55,9 @@ class OVAVE_Dataset(Dataset):
     # def __init__(self, split, test_data_type='total', device=None, debug=True):
         meta_csv_path = cfg.META_CSV_PATH
         meta_df = pd.read_csv(meta_csv_path)
+        # ave_dataset_meta_combined.csv carries a blank record ("train,,,") between the
+        # train and test blocks; it has no vid_name, so it cannot be loaded.
+        meta_df = meta_df.dropna(subset=['cls_name', 'cls_type', 'vid_name'])
         anno_json_path = cfg.ANNO_JSON_PATH
         with open(anno_json_path, 'r') as fr:
             self.anno_data = json.load(fr)
@@ -138,15 +141,95 @@ class OVAVE_Dataset(Dataset):
         for img_name in img_names:
             visual_frames_paths.append(osp.join(visual_frames_dir, img_name))
         
-        audio_inputs  = imagebind.data.load_and_transform_audio_data(audio_paths) # [bs, 1, 10, 1, 128, 204]
-        visual_inputs = imagebind.data.load_and_transform_vision_data(visual_frames_paths) # [bs, 10, 3, 224, 224]
+        if cfg.COMPLEX_REPR.ENABLED:
+            #! Complex representation mode:
+            #! Vision: HSV → Complex → hsv_to_rgb(real) and hsv_to_rgb(imag) (always)
+            visual_inputs, visual_imag_inputs = imagebind.data.load_and_transform_vision_data_complex(
+                visual_frames_paths)  # both [10, 3, 224, 224]
+
+            if cfg.COMPLEX_REPR.AUDIO_MODE == 'fft_real_imag':
+                #! Audio: |FFT.real| → mel & |FFT.imag| → mel (original COMPLEX_REPR)
+                audio_inputs, audio_imag_inputs = imagebind.data.load_and_transform_audio_data_complex(
+                    audio_paths)  # both [1, 10, 1, 128, 204]
+                phase_inputs = None
+            else:
+                #! Audio: standard magnitude mel + phase IF/GD (magnitude_phase mode)
+                audio_inputs, phase_inputs = imagebind.data.load_and_transform_audio_data(
+                    audio_paths, return_phase=True)  # audio: [1, 10, 1, 128, 204], phase: [1, 10, 1, 257, 204]
+                audio_imag_inputs = None
+        elif cfg.COMPLEX_TEMPORAL.ENABLED:
+            #! Complex Temporal mode:
+            #! Vision: HSV → Complex → hsv_to_rgb(real) and hsv_to_rgb(imag) (same as COMPLEX_REPR)
+            visual_inputs, visual_imag_inputs = imagebind.data.load_and_transform_vision_data_complex(
+                visual_frames_paths)  # both [10, 3, 224, 224]
+            #! Audio: standard magnitude mel + phase IF/GD
+            audio_inputs, phase_inputs = imagebind.data.load_and_transform_audio_data(
+                audio_paths, return_phase=True)  # audio: [1, 10, 1, 128, 204], phase: [1, 10, 1, 257, 204]
+        else:
+            if cfg.PHASE.ENABLED and cfg.PHASE.MODE == 'hilbert':
+                audio_inputs, phase_inputs = imagebind.data.load_and_transform_audio_data(
+                    audio_paths, return_hilbert=True)  # audio: [1, 10, 1, 128, 204], hilbert: [1, 10, 1, 128, 204]
+            elif cfg.PHASE.ENABLED:
+                audio_inputs, phase_inputs = imagebind.data.load_and_transform_audio_data(
+                    audio_paths, return_phase=True)  # audio: [1, 10, 1, 128, 204], phase: [1, 10, 1, 257, 204]
+            else:
+                audio_inputs = imagebind.data.load_and_transform_audio_data(audio_paths) # [bs, 1, 10, 1, 128, 204]
+                phase_inputs = None
+            # Visual-imag stream: dispatched by cfg.IHSV.MODE
+            #   'ihsv'       = HSV→complex→hsv_to_rgb imag part (original FCCNs-style)
+            #   'phase_ifft' = 2D-FFT phase-only IFFT + CLAHE (3ch broadcast)
+            #   'luma'       = BT.709 luma replicated to 3 channels
+            if cfg.IHSV.ENABLED:
+                ihsv_mode = getattr(cfg.IHSV, 'MODE', 'ihsv')
+                if ihsv_mode == 'phase_ifft':
+                    visual_inputs, visual_imag_inputs = imagebind.data.load_and_transform_vision_data_phase_ifft(
+                        visual_frames_paths)  # both [10, 3, 224, 224], ImageBind-normalized
+                elif ihsv_mode == 'luma':
+                    visual_inputs, visual_imag_inputs = imagebind.data.load_and_transform_vision_data_luma(
+                        visual_frames_paths)  # both [10, 3, 224, 224], ImageBind-normalized
+                else:
+                    visual_inputs, visual_imag_inputs = imagebind.data.load_and_transform_vision_data_complex(
+                        visual_frames_paths)  # both [10, 3, 224, 224], ImageBind-normalized
+            else:
+                visual_inputs = imagebind.data.load_and_transform_vision_data(visual_frames_paths) # [bs, 10, 3, 224, 224]
+                visual_imag_inputs = None
+
+        # Depth inputs (from Depth-Anything-V2 pre-generated depth maps)
+        depth_inputs = None
+        if cfg.DEPTH.ENABLED:
+            depth_frames_dir = osp.join(self.data_base_dir, self.split, 'depth', category, vid_name)
+            depth_frame_names = sorted(os.listdir(depth_frames_dir))
+            assert len(depth_frame_names) == 10, \
+                f"Expected 10 depth frames in {depth_frames_dir}, got {len(depth_frame_names)}"
+            depth_frames_paths = [osp.join(depth_frames_dir, fn) for fn in depth_frame_names]
+            depth_inputs = imagebind.data.load_and_transform_depth_data(depth_frames_paths)  # [10, 1, 224, 224]
 
         if self.split == 'train':
             avc_label, category_label, full_label = self._gene_event_labels_train(category, vid_name) # [bs, 10, 46]
         else:
             avc_label, category_label, full_label = self._gene_event_labels_test(category, vid_name) # [bs, 10, 67]
 
-
+        # Unified return format: always return all fields, use None for disabled ones
+        if cfg.COMPLEX_REPR.ENABLED:
+            if cfg.COMPLEX_REPR.AUDIO_MODE == 'fft_real_imag':
+                # audio_imag_inputs replaces phase_inputs (already mel-shaped)
+                return audio_inputs, visual_inputs, visual_imag_inputs, self.text_inputs, full_label, avc_label, category_label, vid_name, audio_imag_inputs
+            else:
+                # magnitude_phase: standard audio + phase IF/GD (same format as non-COMPLEX_REPR with phase)
+                return audio_inputs, visual_inputs, visual_imag_inputs, self.text_inputs, full_label, avc_label, category_label, vid_name, phase_inputs
+        elif cfg.COMPLEX_TEMPORAL.ENABLED:
+            # visual_inputs=real_iHSV, visual_imag_inputs=imag_iHSV, phase_inputs=phase IF/GD
+            return audio_inputs, visual_inputs, visual_imag_inputs, self.text_inputs, full_label, avc_label, category_label, vid_name, phase_inputs
+        elif cfg.DEPTH.ENABLED:
+            if phase_inputs is not None:
+                return audio_inputs, visual_inputs, depth_inputs, self.text_inputs, full_label, avc_label, category_label, vid_name, phase_inputs
+            return audio_inputs, visual_inputs, depth_inputs, self.text_inputs, full_label, avc_label, category_label, vid_name
+        elif cfg.IHSV.ENABLED:
+            if phase_inputs is not None:
+                return audio_inputs, visual_inputs, visual_imag_inputs, self.text_inputs, full_label, avc_label, category_label, vid_name, phase_inputs
+            return audio_inputs, visual_inputs, visual_imag_inputs, self.text_inputs, full_label, avc_label, category_label, vid_name
+        if phase_inputs is not None:
+            return audio_inputs, visual_inputs, self.text_inputs, full_label, avc_label, category_label, vid_name, phase_inputs
         return audio_inputs, visual_inputs, self.text_inputs, full_label, avc_label, category_label, vid_name
         # return audio_inputs, visual_inputs, avc_label, category_label, vid_name
 

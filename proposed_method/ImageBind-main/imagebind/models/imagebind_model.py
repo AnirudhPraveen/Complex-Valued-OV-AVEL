@@ -14,10 +14,10 @@ import torch
 
 # Default ImageBind checkpoint location: <ImageBind-main>/.checkpoints/imagebind_huge.pth
 # Override with the IMAGEBIND_CKPT environment variable.
-IMAGEBIND_CKPT_PATH = os.environ.get(
+IMAGEBIND_CKPT_PATH = os.path.normpath(os.environ.get(
     "IMAGEBIND_CKPT",
     os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", ".checkpoints", "imagebind_huge.pth"),
-)
+))
 import torch.nn as nn
 
 from imagebind.models.helpers import (EinOpsRearrange, LearnableLogitScaling, Normalize,

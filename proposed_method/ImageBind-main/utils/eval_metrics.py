@@ -32,9 +32,11 @@ def F1(X_pre, X_gt):
         p += 2*np.sum(x * y) / (np.sum(x) + np.sum(y))
     return p/N
 
-def event_level(SO_av, GT_av):
+def event_level(SO_av, GT_av, length=None):
     # extract events
     N = SO_av.shape[0]
+    if length is None:
+        length = SO_av.shape[1]
     event_p_av = [None for n in range(N)]
     event_gt_av = [None for n in range(N)]
 
@@ -45,19 +47,19 @@ def event_level(SO_av, GT_av):
     for n in range(N):
         seq_pred = SO_av[n, :]
         if np.sum(seq_pred) != 0:
-            x = extract_event(seq_pred, n)
+            x = extract_event(seq_pred, n, length)
             event_p_av[n] = x
 
         seq_gt = GT_av[n, :]
         if np.sum(seq_gt) != 0:
-            x = extract_event(seq_gt, n)
+            x = extract_event(seq_gt, n, length)
             event_gt_av[n] = x
 
         tp, fp, fn = event_wise_metric(event_p_av[n], event_gt_av[n])
         TP_av[n] += tp
         FP_av[n] += fp
         FN_av[n] += fn
-        
+
     # n = len(FP_av)
     F_av = []
     for ii in range(N):
@@ -96,41 +98,43 @@ def segment_level(SO_av, GT_av):
     return f_av
 
 
-def to_vec(start, end):
-    x = np.zeros(10)
+def to_vec(start, end, length=10):
+    x = np.zeros(length)
     for i in range(start, end):
         x[i] = 1
     return x
 
-def extract_event(seq, n):
+def extract_event(seq, n, length=None):
+    if length is None:
+        length = len(seq)
     x = []
     i = 0
-    while i < 10:
+    while i < length:
         if seq[i] == 1:
             start = i
-            if i + 1 == 10:
+            if i + 1 == length:
                 i = i + 1
                 end = i
-                x.append(to_vec(start, end))
+                x.append(to_vec(start, end, length))
                 break
 
-            for j in range(i + 1, 10):
+            for j in range(i + 1, length):
                 if seq[j] != 1:
                     i = j + 1
                     end = j
-                    x.append(to_vec(start, end))
+                    x.append(to_vec(start, end, length))
                     break
                 else:
                     i = j + 1
-                    if i == 10:
+                    if i == length:
                         end = i
-                        x.append(to_vec(start, end))
+                        x.append(to_vec(start, end, length))
                         break
         else:
             i += 1
     return x
 
-def event_wise_metric(event_p, event_gt):
+def event_wise_metric(event_p, event_gt, tiou=0.5):
     TP = 0
     FP = 0
     FN = 0
@@ -144,7 +148,7 @@ def event_wise_metric(event_p, event_gt):
                 flag = True
                 for j in range(nn):
                     x2 = event_gt[j]
-                    if np.sum(x1 * x2) >= 0.5 * np.sum(x1 + x2 - x1 * x2): #0.5
+                    if np.sum(x1 * x2) >= tiou * np.sum(x1 + x2 - x1 * x2):
                         TP += 1
                         flag = False
                         break
@@ -152,7 +156,6 @@ def event_wise_metric(event_p, event_gt):
                     FP += 1
             else:
                 FP += 1
-        # pdb.set_trace()
 
     if event_gt is not None:
         num_event = len(event_gt)
@@ -163,12 +166,65 @@ def event_wise_metric(event_p, event_gt):
                 flag = True
                 for j in range(nn):
                     x2 = event_p[j]
-                    if np.sum(x1 * x2) >= 0.5 * np.sum(x1 + x2 - x1 * x2): #0.5
+                    if np.sum(x1 * x2) >= tiou * np.sum(x1 + x2 - x1 * x2):
                         flag = False
                         break
                 if flag:
                     FN += 1
             else:
                 FN += 1
-        # pdb.set_trace()
     return TP, FP, FN
+
+
+def event_level_all(SO_av, GT_av, length, tiou_list, num_classes=100):
+    """
+    Event-level F1 at multiple tIoU thresholds (matches PreFM's event_level_all_UnAV).
+
+    Args:
+        SO_av: [N, T] predicted binary matrix (N=num_classes)
+        GT_av: [N, T] ground truth binary matrix
+        length: temporal length T
+        tiou_list: list/array of tIoU thresholds (e.g., np.arange(0.1, 1.0, 0.1))
+        num_classes: number of event classes (default 100)
+
+    Returns:
+        list of F1 scores, one per tIoU threshold
+    """
+    N = num_classes
+
+    # Pre-extract events for each class (avoid recomputing per threshold)
+    event_p_av = [None for _ in range(N)]
+    event_gt_av = [None for _ in range(N)]
+
+    for n in range(N):
+        seq_pred = SO_av[n, :]
+        if np.sum(seq_pred) != 0:
+            event_p_av[n] = extract_event(seq_pred, n, length)
+        seq_gt = GT_av[n, :]
+        if np.sum(seq_gt) != 0:
+            event_gt_av[n] = extract_event(seq_gt, n, length)
+
+    f_av_list = []
+    for threshold in tiou_list:
+        TP_av = np.zeros(N)
+        FP_av = np.zeros(N)
+        FN_av = np.zeros(N)
+
+        for n in range(N):
+            tp, fp, fn = event_wise_metric(event_p_av[n], event_gt_av[n], threshold)
+            TP_av[n] += tp
+            FP_av[n] += fp
+            FN_av[n] += fn
+
+        F_av = []
+        for ii in range(N):
+            if (TP_av[ii] + FP_av[ii]) != 0 or (TP_av[ii] + FN_av[ii]) != 0:
+                F_av.append(2 * TP_av[ii] / (2 * TP_av[ii] + (FN_av[ii] + FP_av[ii])))
+
+        if len(F_av) == 0:
+            f_av = 1.0
+        else:
+            f_av = sum(F_av) / len(F_av)
+        f_av_list.append(f_av)
+
+    return f_av_list

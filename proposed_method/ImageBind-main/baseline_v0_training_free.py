@@ -29,9 +29,6 @@ import pdb
 
 
 # configs
-# dataset_configs = get_and_save_args(parser)
-# parser.set_defaults(**dataset_configs)
-# args = parser.parse_args()
 args = get_and_save_args(parser)
 # print parameters
 print('----------------args-----------------')
@@ -86,7 +83,7 @@ def main():
     )
 
     assert OVAVE_Dataset(split='test', test_data_type=args.test_data_type).__len__() % args.test_batch_size == 0, 'change the batch size to ensure all testing data are used'
-    
+
     ''' Model selection '''
     mainModel = imagebind_model.imagebind_huge(pretrained=True)
     # mainModel.eval()
@@ -97,7 +94,7 @@ def main():
     # learned_parameters = mainModel.parameters()
     # optimizer = torch.optim.Adam(learned_parameters, lr=args.lr)
     # scheduler = MultiStepLR(optimizer, milestones=[10, 20, 30], gamma=0.5)
-    
+
     """loss"""
     criterion = nn.BCEWithLogitsLoss().cuda()
     criterion_event = nn.CrossEntropyLoss().cuda()
@@ -124,7 +121,7 @@ def compute_cross_modal_similarity(tensor_a, tensor_t):
     tensor_a_expanded = tensor_a.unsqueeze(2).expand(B, T, C, D)
     tensor_t_expanded = tensor_t.unsqueeze(1).expand(B, T, C, D)
     cos_sim = F.cosine_similarity(tensor_a_expanded, tensor_t_expanded, dim=-1)
-    
+
     # norm_a = F.normalize(tensor_a, dim=-1)
     # norm_t = F.normalize(tensor_t, dim=-1)
     # simm_at = torch.bmm(norm_a, norm_t.permute(0, 2, 1))
@@ -144,13 +141,13 @@ def postprocess_simm(simm_at, simm_vt):
     for i in range(B):
         if torch.all(is_event_flag[i] == 0):
             event_flag[i][cfg.TOTAL_BG_CLASS_ID] = 1 # background video, all segments are backgrounds
-        else: 
+        else:
             nonzero_pos = torch.nonzero(is_event_flag[i], as_tuple=False).squeeze()
             if len(nonzero_pos.size()) == 0: # only one postive position
                 category_id = max_prob_at_idx[i][nonzero_pos.item()]
             else:
                 category_id = max_prob_at_idx[i][nonzero_pos[0].item()]
-            event_flag[i][category_id] = 1 
+            event_flag[i][category_id] = 1
     # pdb.set_trace()
     return is_event_flag, event_flag
 
@@ -166,13 +163,13 @@ def postprocess_simm_v01(simm_at, simm_vt):
     for i in range(B):
         if torch.all(is_event_flag[i] == 0):
             event_flag[i][cfg.TOTAL_BG_CLASS_ID] = 1 # background video, all segments are backgrounds
-        else: 
+        else:
             nonzero_pos = torch.nonzero(is_event_flag[i], as_tuple=False).squeeze()
             if len(nonzero_pos.size()) == 0: # only one postive position
                 category_id = max_prob_at_idx[i][nonzero_pos.item()]
             else:
                 category_id = max_prob_at_idx[i][nonzero_pos[0].item()]
-            event_flag[i][category_id] = 1 
+            event_flag[i][category_id] = 1
     # pdb.set_trace()
     return is_event_flag, event_flag
 
@@ -199,7 +196,7 @@ def validate_epoch(model, val_dataloader, criterion, criterion_event, epoch, eva
         text_inputs = text[0].cuda() # [46/67, 77]
         avc_labels = avc_label.cuda() # [bs, 10]
         category_labels = category_label.squeeze(1).cuda() # [bs]
-        
+
         bs = visual_inputs.size(0)
         inputs = {
             ModalityType.TEXT: text_inputs.cuda(), # [46/67, 77]
@@ -220,7 +217,7 @@ def validate_epoch(model, val_dataloader, criterion, criterion_event, epoch, eva
             simm_vt = compute_cross_modal_similarity(visual_feas, text_feas) # [bs, 10, 67]
             # pdb.set_trace()
             is_event_scores, event_scores = postprocess_simm(simm_at, simm_vt) # [bs, 10], [bs, 67+1]
-            # is_event_scores: avc predction; 
+            # is_event_scores: avc predction;
             # event_scores: event category prediction
         # baseline v01: training free: using `other' category, computing audio-text visual-text similarity"""
         elif args.test_strategy_type == 'v01':
@@ -232,7 +229,7 @@ def validate_epoch(model, val_dataloader, criterion, criterion_event, epoch, eva
         loss_is_event = criterion_event(is_event_scores, avc_labels)
         loss_event_class = criterion_event(event_scores, category_labels)
         loss = loss_is_event + loss_event_class
-        
+
         acc = compute_accuracy_supervised(is_event_scores, event_scores, avc_labels, category_labels)
         accuracy.update(acc.item(), bs * 10)
         seg_f, eve_f = compute_seg_eve_fscores(is_event_scores, event_scores, avc_labels, category_labels)
@@ -275,11 +272,11 @@ def compute_accuracy_supervised(is_event_scores_pred, event_scores_pred, avc_lab
         # add mask
         pred[scores_mask] = bg_flag # 67 denotes bg
         return pred
-    
+
     pred = obtain_label_mat(is_event_scores_pred, event_scores_pred, bg_flag)
     is_event_scores_gt = avc_labels
     event_scores_gt = torch.zeros_like(event_scores_pred) # [bs, C+1]
-    for i in range(event_scores_gt.size(0)): 
+    for i in range(event_scores_gt.size(0)):
         event_scores_gt[i, category_labels[i]] = 1
 
     targets = obtain_label_mat(is_event_scores_gt, event_scores_gt, bg_flag)
@@ -309,7 +306,7 @@ def compute_seg_eve_fscores(is_event_scores_pred, event_scores_pred, avc_labels,
                 pred_mat[i][-1] = 1 - is_event_scores[i] #  background
             # pdb.set_trace()
         return pred_mat.cpu().data.numpy()
-    
+
     def obtain_gt_mat(avc_labels, category_labels, bg_flag):
         # avc_labels: [bs, 10], category_labels: [bs]
         B, T = avc_labels.shape
@@ -328,7 +325,7 @@ def compute_seg_eve_fscores(is_event_scores_pred, event_scores_pred, avc_labels,
     pred = obtain_pred_mat(is_event_scores_pred, event_scores_pred, bg_flag) # [bs, C+1, T]
     targets = obtain_gt_mat(avc_labels, category_labels, bg_flag)
     # pdb.set_trace()
-    
+
     B = avc_labels.shape[0]
     seg_fscore = np.zeros(B)
     eve_fscore = np.zeros(B)
@@ -341,7 +338,7 @@ def compute_seg_eve_fscores(is_event_scores_pred, event_scores_pred, avc_labels,
     avg_batch_eve_fscore = np.mean(eve_fscore)
     # pdb.set_trace()
     return avg_batch_seg_fscore, avg_batch_eve_fscore
-    
+
 
 
 
@@ -349,7 +346,7 @@ if __name__ == '__main__':
     cur = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(time.time()))
     print(f'current time: {cur}')
     start = time.time()
-    
+
     main()
 
     end = time.time()
