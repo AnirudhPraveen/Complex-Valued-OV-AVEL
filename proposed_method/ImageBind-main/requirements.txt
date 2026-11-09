@@ -24,3 +24,4 @@ opencv-python==4.7.0.72
 Pillow
 PyYAML
 tqdm==4.65.0
+moviepy==1.0.3   # only for tools/prepare_ave_ov.py (AVE-OV preparation)

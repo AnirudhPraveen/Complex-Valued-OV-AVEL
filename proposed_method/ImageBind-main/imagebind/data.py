@@ -75,43 +75,6 @@ def _fbank_with_phase(waveform):
     return mel_energies, phase
 
 
-def _fbank_complex(waveform):
-    """
-    Extract real and imaginary mel spectrograms from audio FFT.
-    Uses |real| and |imag| (absolute value) → mel → log.
-
-    Returns:
-        real_mel: [n_frames, 128] — mel spectrogram of cos (real) component
-        imag_mel: [n_frames, 128] — mel spectrogram of sin (imaginary) component
-    """
-    from torchaudio.compliance.kaldi import (
-        _get_waveform_and_window_properties,
-        _get_window,
-        get_mel_banks,
-        _get_epsilon,
-    )
-    device, dtype = waveform.device, waveform.dtype
-    waveform_proc, window_shift, window_size, padded_window_size = \
-        _get_waveform_and_window_properties(
-            waveform, -1, 16000.0, 10.0, 25.0, True, 0.97)
-    strided_input, signal_log_energy = _get_window(
-        waveform_proc, padded_window_size, window_size, window_shift,
-        "hanning", 0.42, True, True, 1.0, 0.0, True, 0.97)
-
-    complex_fft = torch.fft.rfft(strided_input)   # [n_frames, 257] complex
-    real_abs = complex_fft.real.abs()               # [n_frames, 257]
-    imag_abs = complex_fft.imag.abs()               # [n_frames, 257]
-
-    mel_banks, _ = get_mel_banks(128, padded_window_size, 16000.0, 20.0, 0.0, 100.0, -500.0, 1.0)
-    mel_banks = mel_banks.to(device=device, dtype=dtype)
-    mel_banks = torch.nn.functional.pad(mel_banks, (0, 1), mode="constant", value=0)
-
-    real_mel = torch.max(torch.mm(real_abs, mel_banks.T), _get_epsilon(device, dtype)).log()
-    imag_mel = torch.max(torch.mm(imag_abs, mel_banks.T), _get_epsilon(device, dtype)).log()
-
-    return real_mel, imag_mel
-
-
 def _pad_or_truncate(x, target_length, dim=1):
     """Pad or truncate tensor along given dimension to target_length."""
     n = x.size(dim)
@@ -126,7 +89,7 @@ def _pad_or_truncate(x, target_length, dim=1):
 
 
 def waveform2melspec(waveform, sample_rate, num_mel_bins, target_length,
-                     return_phase=False, return_hilbert=False):
+                     return_phase=False):
     # Based on https://github.com/YuanGongND/ast/blob/d7d8b4b8e06cdaeb6c843cdb38794c1c7692234c/src/dataloader.py#L102
     waveform -= waveform.mean()
     phase_out = None
@@ -171,146 +134,10 @@ def waveform2melspec(waveform, sample_rate, num_mel_bins, target_length,
 
     fbank = fbank.unsqueeze(0)  # [1, 128, target_length]
 
-    if return_hilbert:
-        # Hilbert analytic signal imag of mel: [1, 128, target_length]
-        # Same shape as mel — can be fed directly through ImageBind audio encoder
-        hilbert_imag = _hilbert_analytic_imag(fbank.squeeze(0))  # [128, target_length]
-        hilbert_imag = hilbert_imag.unsqueeze(0)  # [1, 128, target_length]
-        return fbank, hilbert_imag
-
     if return_phase and phase_out is not None:
         phase_out = phase_out.unsqueeze(0)  # [1, 257, target_length]
         return fbank, phase_out
     return fbank
-
-
-def _hilbert_analytic_imag(mel):
-    """
-    Compute imaginary part of the Hilbert analytic signal along temporal axis.
-    Input:  mel [F, T] real (log-mel spectrogram, before unsqueeze)
-    Output: hilbert_imag [F, T] real
-
-    The analytic signal z = mel + i*H(mel) has structured phase: the envelope
-    |z| tracks energy modulations and angle(z) tracks instantaneous frequency.
-    Unlike raw STFT phase, this phase is smooth and event-correlated.
-    """
-    N = mel.size(-1)
-    X = torch.fft.fft(mel, dim=-1)  # [F, T] complex
-
-    # Hilbert multiplier: h[0]=1, h[1..N/2-1]=2, h[N/2]=1, rest=0
-    h = torch.zeros(N, device=mel.device, dtype=mel.dtype)
-    if N % 2 == 0:
-        h[0] = 1.0
-        h[1:N // 2] = 2.0
-        h[N // 2] = 1.0
-    else:
-        h[0] = 1.0
-        h[1:(N + 1) // 2] = 2.0
-
-    analytic = torch.fft.ifft(X * h.unsqueeze(0), dim=-1)  # [F, T] complex
-    return analytic.imag.float()  # [F, T] real
-
-
-def waveform2melspec_complex(waveform, sample_rate, num_mel_bins, target_length):
-    """
-    Extract real and imaginary mel spectrograms from audio.
-    Returns (real_mel, imag_mel), each [1, 128, target_length].
-    """
-    waveform -= waveform.mean()
-    real_mel, imag_mel = _fbank_complex(waveform)
-    # real_mel, imag_mel: [n_frames, 128]
-    real_mel = real_mel.transpose(0, 1)  # [128, n_frames]
-    imag_mel = imag_mel.transpose(0, 1)  # [128, n_frames]
-
-    # Pad/truncate to target_length
-    n_frames = real_mel.size(1)
-    p = target_length - n_frames
-    if p > 0:
-        real_mel = torch.nn.functional.pad(real_mel, (0, p), mode="constant", value=0)
-        imag_mel = torch.nn.functional.pad(imag_mel, (0, p), mode="constant", value=0)
-    elif p < 0:
-        real_mel = real_mel[:, 0:target_length]
-        imag_mel = imag_mel[:, 0:target_length]
-
-    return real_mel.unsqueeze(0), imag_mel.unsqueeze(0)  # [1, 128, target_length] each
-
-
-# Normalization stats for complex mel spectrograms.
-# Run compute_mel_stats.py to get these values for your dataset.
-# These defaults use magnitude mel stats as fallback — update after computing!
-COMPLEX_REAL_MEL_MEAN = -2.628  # Computed via compute_mel_stats.py on full dataset
-COMPLEX_REAL_MEL_STD = 1.916    # Computed via compute_mel_stats.py on full dataset
-COMPLEX_IMAG_MEL_MEAN = -2.629  # Computed via compute_mel_stats.py on full dataset
-COMPLEX_IMAG_MEL_STD = 1.916    # Computed via compute_mel_stats.py on full dataset
-
-
-def load_and_transform_audio_data_complex(
-    audio_paths,
-    device=None,
-    num_mel_bins=128,
-    target_length=204,
-    sample_rate=16000,
-    real_mean=COMPLEX_REAL_MEL_MEAN,
-    real_std=COMPLEX_REAL_MEL_STD,
-    imag_mean=COMPLEX_IMAG_MEL_MEAN,
-    imag_std=COMPLEX_IMAG_MEL_STD,
-):
-    """
-    Load audio and return real and imaginary mel spectrograms.
-    Instead of magnitude² → mel, uses real² → mel and imag² → mel from FFT.
-
-    Returns:
-        real_audio: [B, 10, 1, 128, 204] — mel of cos (real) FFT component
-        imag_audio: [B, 10, 1, 128, 204] — mel of sin (imaginary) FFT component
-    """
-    if audio_paths is None:
-        return None, None
-
-    audio_duration = 10
-    real_outputs = []
-    imag_outputs = []
-
-    for audio_path in audio_paths:
-        audio_data, sr = sf.read(audio_path, dtype='float32')
-        waveform = torch.from_numpy(audio_data)
-        if waveform.ndim == 1:
-            waveform = waveform.unsqueeze(0)
-        else:
-            waveform = waveform.T
-        if sample_rate != sr:
-            waveform = torchaudio.functional.resample(
-                waveform, orig_freq=sr, new_freq=sample_rate
-            )
-
-        tmp = sample_rate * audio_duration
-        if waveform.size(1) >= tmp:
-            waveform = waveform[:, :tmp]
-        elif waveform.size(1) < tmp:
-            new_waveform = torch.zeros([2, tmp])
-            new_waveform[:, :waveform.size(1)] = waveform
-            waveform = new_waveform
-
-        all_real = []
-        all_imag = []
-        for t in range(audio_duration):
-            waveform_clip = waveform[:, t*sample_rate:(t+1)*sample_rate]
-            waveform_clip = waveform_clip.repeat(1, 2)  # repeat to 2 seconds
-            real_mel, imag_mel = waveform2melspec_complex(
-                waveform_clip, sample_rate, num_mel_bins, target_length
-            )
-            all_real.append(real_mel)
-            all_imag.append(imag_mel)
-
-        normalize_real = transforms.Normalize(mean=real_mean, std=real_std)
-        normalize_imag = transforms.Normalize(mean=imag_mean, std=imag_std)
-        all_real = torch.stack([normalize_real(r) for r in all_real], dim=0)  # [10, 1, 128, 204]
-        all_imag = torch.stack([normalize_imag(i) for i in all_imag], dim=0)  # [10, 1, 128, 204]
-        real_outputs.append(all_real)
-        imag_outputs.append(all_imag)
-
-    real_out = torch.stack(real_outputs, dim=0)  # [B, 10, 1, 128, 204]
-    imag_out = torch.stack(imag_outputs, dim=0)  # [B, 10, 1, 128, 204]
-    return real_out, imag_out
 
 
 def get_clip_timepoints(clip_sampler, duration):
@@ -408,41 +235,6 @@ def _ihsv_to_unit_range(x):
     return x.clamp(0, 1)
 
 
-def load_and_transform_vision_data_imag(image_paths, device=None):
-    """Load images, convert RGB -> HSV -> Complex, return imaginary part normalized for ImageBind."""
-    if image_paths is None:
-        return None
-
-    image_outputs = []
-
-    spatial_transform = transforms.Compose(
-        [
-            transforms.Resize(
-                224, interpolation=transforms.InterpolationMode.BICUBIC
-            ),
-            transforms.CenterCrop(224),
-            transforms.ToTensor(),  # [3, 224, 224] in [0, 1]
-        ]
-    )
-
-    for image_path in image_paths:
-        with open(image_path, "rb") as fopen:
-            image = Image.open(fopen).convert("RGB")
-
-        img_tensor = spatial_transform(image)  # [3, 224, 224], values in [0, 1]
-        hsv = _rgb_to_hsv(img_tensor)  # [3, 224, 224], H in [0, 2pi], S/V in [0, 1]
-        imag_hsv = _hsv_to_complex_imag(hsv)  # [3, 224, 224]
-        imag = _ihsv_to_unit_range(_hsv_to_rgb(imag_hsv))  # cfg.IHSV.RESCALE_MODE: 'clamp' | 'minmax'
-        # Normalize with ImageBind vision stats so the frozen encoder sees familiar value ranges
-        imag = transforms.functional.normalize(
-            imag,
-            mean=(0.48145466, 0.4578275, 0.40821073),
-            std=(0.26862954, 0.26130258, 0.27577711),
-        )
-        image_outputs.append(imag)
-    return torch.stack(image_outputs, dim=0)
-
-
 # ---------------------------------------------------------------------------
 # Complex representation: HSV → Complex → hsv_to_rgb on real & imag parts
 # From FCCNs (Fully Complex-valued Convolutional Networks)
@@ -537,108 +329,6 @@ def load_and_transform_vision_data_complex(image_paths, device=None):
 _BT709_LUMA_WEIGHTS = torch.tensor([0.2126, 0.7152, 0.0722]).view(3, 1, 1)
 
 
-def load_and_transform_vision_data_luma(image_paths, device=None):
-    """Load images, return (real_rgb, luma3_rgb) both [N, 3, 224, 224]
-    ImageBind-normalized. Imag stream is BT.709 luma broadcast to 3 channels."""
-    if image_paths is None:
-        return None, None
-
-    real_outputs = []
-    imag_outputs = []
-
-    spatial_transform = transforms.Compose(
-        [
-            transforms.Resize(
-                224, interpolation=transforms.InterpolationMode.BICUBIC
-            ),
-            transforms.CenterCrop(224),
-            transforms.ToTensor(),  # [3, 224, 224] in [0, 1]
-        ]
-    )
-    imagebind_normalize = transforms.Normalize(
-        mean=(0.48145466, 0.4578275, 0.40821073),
-        std=(0.26862954, 0.26130258, 0.27577711),
-    )
-
-    for image_path in image_paths:
-        with open(image_path, "rb") as fopen:
-            image = Image.open(fopen).convert("RGB")
-
-        rgb = spatial_transform(image)  # [3, 224, 224] in [0, 1]
-        luma = (rgb * _BT709_LUMA_WEIGHTS).sum(dim=0, keepdim=True)  # [1, 224, 224]
-        luma3 = luma.expand(3, -1, -1).contiguous()                   # [3, 224, 224]
-
-        real_outputs.append(imagebind_normalize(rgb))
-        imag_outputs.append(imagebind_normalize(luma3))
-
-    return torch.stack(real_outputs, dim=0), torch.stack(imag_outputs, dim=0)
-
-
-def _phase_only_ifft_clahe(img_u8_gray, clip=3.0, tile=(8, 8)):
-    """Phase-only reconstruction of a grayscale image + CLAHE.
-
-    img_u8_gray: [H, W] uint8 numpy.
-    Returns:     [H, W] uint8 numpy, contrast-enhanced phase-IFFT.
-    """
-    import cv2
-    F = np.fft.fft2(img_u8_gray.astype(np.float32))
-    recon = np.fft.ifft2(np.exp(1j * np.angle(F))).real
-    lo, hi = recon.min(), recon.max()
-    if hi - lo < 1e-12:
-        raw_u8 = np.zeros_like(recon, dtype=np.uint8)
-    else:
-        raw_u8 = np.clip((recon - lo) / (hi - lo) * 255.0, 0, 255).astype(np.uint8)
-    return cv2.createCLAHE(clipLimit=clip, tileGridSize=tile).apply(raw_u8)
-
-
-def load_and_transform_vision_data_phase_ifft(image_paths, device=None):
-    """Load images. Returns (real_rgb, imag_phase_ifft_3ch), both ImageBind-normalized.
-
-    real_rgb:           standard RGB pipeline (resize 224 → center crop → ToTensor → ImageBind mean/std).
-    imag_phase_ifft_3ch: grayscale phase-only IFFT + CLAHE, replicated to 3 channels,
-                        then run through the same ImageBind mean/std so it matches the
-                        distribution the frozen visual encoder expects.
-
-    Shapes: both [N, 3, 224, 224] float tensors.
-    """
-    import cv2
-
-    if image_paths is None:
-        return None, None
-
-    resize_crop = transforms.Compose([
-        transforms.Resize(224, interpolation=transforms.InterpolationMode.BICUBIC),
-        transforms.CenterCrop(224),
-    ])
-    to_tensor = transforms.ToTensor()
-    imagebind_normalize = transforms.Normalize(
-        mean=(0.48145466, 0.4578275, 0.40821073),
-        std=(0.26862954, 0.26130258, 0.27577711),
-    )
-
-    real_outputs, imag_outputs = [], []
-
-    for image_path in image_paths:
-        with open(image_path, "rb") as fopen:
-            image = Image.open(fopen).convert("RGB")
-        pil_224 = resize_crop(image)  # PIL, 224x224
-
-        # Real stream: standard ImageBind pipeline.
-        real_tensor = imagebind_normalize(to_tensor(pil_224))  # [3, 224, 224]
-
-        # Imag stream: grayscale phase-IFFT + CLAHE, broadcast to 3 channels.
-        gray_u8 = np.array(pil_224.convert("L"), dtype=np.uint8)  # [224, 224]
-        phase_u8 = _phase_only_ifft_clahe(gray_u8)                # [224, 224]
-        phase_float = phase_u8.astype(np.float32) / 255.0         # [224, 224] in [0, 1]
-        phase_3ch = np.stack([phase_float] * 3, axis=0)           # [3, 224, 224]
-        imag_tensor = imagebind_normalize(torch.from_numpy(phase_3ch))
-
-        real_outputs.append(real_tensor)
-        imag_outputs.append(imag_tensor)
-
-    return torch.stack(real_outputs, dim=0), torch.stack(imag_outputs, dim=0)
-
-
 def load_and_transform_depth_data(depth_paths, device=None):
     """Load depth maps (uint16 PNGs, 224x224) for ImageBind's depth encoder.
 
@@ -707,7 +397,6 @@ def load_and_transform_audio_data(
     mean=-4.268,
     std=9.138,
     return_phase=False,
-    return_hilbert=False,
 ):
     if audio_paths is None:
         return None
@@ -743,13 +432,7 @@ def load_and_transform_audio_data(
             waveform_clip = waveform[:, t*sample_rate:(t+1)*sample_rate]
             waveform_clip = waveform_clip.repeat(1, 2) #! repeat to 2 seconds
 
-            if return_hilbert:
-                waveform_melspec, hilbert_imag = waveform2melspec(
-                    waveform_clip, sample_rate, num_mel_bins, target_length,
-                    return_hilbert=True,
-                )
-                all_phases.append(hilbert_imag)  # [1, 128, 204] — same shape as mel
-            elif return_phase and USE_PHASE_EXTRACTION:
+            if return_phase and USE_PHASE_EXTRACTION:
                 waveform_melspec, phase_spec = waveform2melspec(
                     waveform_clip, sample_rate, num_mel_bins, target_length,
                     return_phase=True,
@@ -766,80 +449,19 @@ def load_and_transform_audio_data(
         all_clips = torch.stack(all_clips, dim=0)   # [10, 1, 128, 204]
         audio_outputs.append(all_clips)
 
-        if (return_phase or return_hilbert) and all_phases:
-            if return_hilbert:
-                # Normalize Hilbert imag with same mel stats — it's derived from mel
-                # and has similar scale. ImageBind expects normalized input.
-                all_phases = [normalize(hp) for hp in all_phases]
+        if (return_phase) and all_phases:
             all_phases = torch.stack(all_phases, dim=0)
             # hilbert: [10, 1, 128, 204], phase: [10, 1, 257, 204]
             phase_outputs.append(all_phases)
 
     audio_out = torch.stack(audio_outputs, dim=0)    # [B, 10, 1, 128, 204]
 
-    if (return_phase or return_hilbert) and phase_outputs:
+    if (return_phase) and phase_outputs:
         phase_out = torch.stack(phase_outputs, dim=0)
         # hilbert: [B, 10, 1, 128, 204], phase: [B, 10, 1, 257, 204]
         return audio_out, phase_out
 
     return audio_out
-
-
-def ori_load_and_transform_audio_data(
-    audio_paths,
-    device,
-    num_mel_bins=128,
-    target_length=204,
-    sample_rate=16000,
-    clip_duration=2,
-    clips_per_video=3,
-    mean=-4.268,
-    std=9.138,
-):
-    if audio_paths is None:
-        return None
-
-    audio_outputs = []
-    clip_sampler = ConstantClipsPerVideoSampler(
-        clip_duration=clip_duration, clips_per_video=clips_per_video
-    )
-
-    for audio_path in audio_paths:
-        # Use soundfile for audio loading (compatible with PyTorch nightly)
-        audio_data, sr = sf.read(audio_path, dtype='float32')
-        waveform = torch.from_numpy(audio_data)
-        if waveform.ndim == 1:
-            waveform = waveform.unsqueeze(0)
-        else:
-            waveform = waveform.T
-        if sample_rate != sr:
-            waveform = torchaudio.functional.resample(
-                waveform, orig_freq=sr, new_freq=sample_rate
-            )
-        all_clips_timepoints = get_clip_timepoints(
-            clip_sampler, waveform.size(1) / sample_rate
-        )
-        all_clips = []
-        for clip_timepoints in all_clips_timepoints:
-            waveform_clip = waveform[
-                :,
-                int(clip_timepoints[0] * sample_rate) : int(
-                    clip_timepoints[1] * sample_rate
-                ),
-            ]
-            waveform_melspec = waveform2melspec(
-                waveform_clip, sample_rate, num_mel_bins, target_length
-            )
-            all_clips.append(waveform_melspec)
-
-        normalize = transforms.Normalize(mean=mean, std=std)
-        all_clips = [normalize(ac).to(device) for ac in all_clips]
-
-        all_clips = torch.stack(all_clips, dim=0)
-        audio_outputs.append(all_clips)
-    pdb.set_trace()
-
-    return torch.stack(audio_outputs, dim=0)
 
 
 def crop_boxes(boxes, x_offset, y_offset):
@@ -861,7 +483,7 @@ def crop_boxes(boxes, x_offset, y_offset):
     return cropped_boxes
 
 
-def uniform_crop(images, size, spatial_idx, boxes=None, scale_size=None):
+def uniform_crop(images, size, spatial_idx, boxes=None):
     """
     Perform uniform spatial sampling on the images and corresponding boxes.
     Args:
@@ -888,18 +510,6 @@ def uniform_crop(images, size, spatial_idx, boxes=None, scale_size=None):
     height = images.shape[2]
     width = images.shape[3]
 
-    if scale_size is not None:
-        if width <= height:
-            width, height = scale_size, int(height / width * scale_size)
-        else:
-            width, height = int(width / height * scale_size), scale_size
-        images = torch.nn.functional.interpolate(
-            images,
-            size=(height, width),
-            mode="bilinear",
-            align_corners=False,
-        )
-
     y_offset = int(math.ceil((height - size) / 2))
     x_offset = int(math.ceil((width - size) / 2))
 
@@ -914,7 +524,7 @@ def uniform_crop(images, size, spatial_idx, boxes=None, scale_size=None):
         elif spatial_idx == 2:
             x_offset = width - size
     cropped = images[:, :, y_offset : y_offset + size, x_offset : x_offset + size]
-    cropped_boxes = crop_boxes(boxes, x_offset, y_offset) if boxes is not None else None
+    cropped_boxes = None
     if ndim == 3:
         cropped = cropped.squeeze(0)
     return cropped, cropped_boxes

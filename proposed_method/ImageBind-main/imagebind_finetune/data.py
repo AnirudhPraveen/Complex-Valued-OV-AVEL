@@ -260,63 +260,6 @@ def load_and_transform_audio_data(
     return audio_out
 
 
-def ori_load_and_transform_audio_data(
-    audio_paths,
-    device,
-    num_mel_bins=128,
-    target_length=204,
-    sample_rate=16000,
-    clip_duration=2,
-    clips_per_video=3,
-    mean=-4.268,
-    std=9.138,
-):
-    if audio_paths is None:
-        return None
-
-    audio_outputs = []
-    clip_sampler = ConstantClipsPerVideoSampler(
-        clip_duration=clip_duration, clips_per_video=clips_per_video
-    )
-
-    for audio_path in audio_paths:
-        # Use soundfile for audio loading (compatible with PyTorch nightly)
-        audio_data, sr = sf.read(audio_path, dtype='float32')
-        waveform = torch.from_numpy(audio_data)
-        if waveform.ndim == 1:
-            waveform = waveform.unsqueeze(0)
-        else:
-            waveform = waveform.T
-        if sample_rate != sr:
-            waveform = torchaudio.functional.resample(
-                waveform, orig_freq=sr, new_freq=sample_rate
-            )
-        all_clips_timepoints = get_clip_timepoints(
-            clip_sampler, waveform.size(1) / sample_rate
-        )
-        all_clips = []
-        for clip_timepoints in all_clips_timepoints:
-            waveform_clip = waveform[
-                :,
-                int(clip_timepoints[0] * sample_rate) : int(
-                    clip_timepoints[1] * sample_rate
-                ),
-            ]
-            waveform_melspec = waveform2melspec(
-                waveform_clip, sample_rate, num_mel_bins, target_length
-            )
-            all_clips.append(waveform_melspec)
-
-        normalize = transforms.Normalize(mean=mean, std=std)
-        all_clips = [normalize(ac).to(device) for ac in all_clips]
-
-        all_clips = torch.stack(all_clips, dim=0)
-        audio_outputs.append(all_clips)
-    pdb.set_trace()
-
-    return torch.stack(audio_outputs, dim=0)
-
-
 def crop_boxes(boxes, x_offset, y_offset):
     """
     Perform crop on the bounding boxes given the offsets.
@@ -336,7 +279,7 @@ def crop_boxes(boxes, x_offset, y_offset):
     return cropped_boxes
 
 
-def uniform_crop(images, size, spatial_idx, boxes=None, scale_size=None):
+def uniform_crop(images, size, spatial_idx, boxes=None):
     """
     Perform uniform spatial sampling on the images and corresponding boxes.
     Args:
@@ -363,18 +306,6 @@ def uniform_crop(images, size, spatial_idx, boxes=None, scale_size=None):
     height = images.shape[2]
     width = images.shape[3]
 
-    if scale_size is not None:
-        if width <= height:
-            width, height = scale_size, int(height / width * scale_size)
-        else:
-            width, height = int(width / height * scale_size), scale_size
-        images = torch.nn.functional.interpolate(
-            images,
-            size=(height, width),
-            mode="bilinear",
-            align_corners=False,
-        )
-
     y_offset = int(math.ceil((height - size) / 2))
     x_offset = int(math.ceil((width - size) / 2))
 
@@ -389,7 +320,7 @@ def uniform_crop(images, size, spatial_idx, boxes=None, scale_size=None):
         elif spatial_idx == 2:
             x_offset = width - size
     cropped = images[:, :, y_offset : y_offset + size, x_offset : x_offset + size]
-    cropped_boxes = crop_boxes(boxes, x_offset, y_offset) if boxes is not None else None
+    cropped_boxes = None
     if ndim == 3:
         cropped = cropped.squeeze(0)
     return cropped, cropped_boxes

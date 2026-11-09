@@ -34,24 +34,7 @@ from imagebind_finetune.models.multimodal_preprocessors import (AudioPreprocesso
 from imagebind_finetune.models.transformer import MultiheadAttention, SimpleTransformer
 
 from layers.temporal_av_attn_layer import (
-    TemporalAttentionModule, TemporalLinearModule,
-    ComplexTemporalAttentionModule,
-    SeparateComplexTemporalAttentionModule,
-    ComplexCrossModalAttentionModule,
-    ComplexProjectionSelfAttentionModule,
-    ComplexTemporalProjectionSelfAttentionModule,
-    SplitComplexTemporalAttentionModule,
-    TemporalDiffComplexAttentionModule,
-    RotaryComplexTemporalAttentionModule,
-    ProjectedComplexTemporalAttentionModule,
-    AlignedTemporalDiffComplexAttention,
-    PhaseAwareComplexAttention,
-    IdentityComplexTemporalAttentionModule,
-    DualComplexSelfAttentionWithTextImag,
-    TextHeadedTemporalAttention,
-    TextHeadedComplexTemporalAttention,
-    MoETemporalAttentionModule,
-)
+    TemporalAttentionModule)
 
 import pdb
 
@@ -120,50 +103,6 @@ class ImageBindModel(nn.Module):
         use_mask_in_attn=True,
         win_size=4,
         norm_flag=None,
-        # text residual tuning
-        text_tune_flag=False,
-        # complex temporal attention variants
-        use_complex_temporal_attn=False,
-        use_dual_stream_temporal_attn=False,
-        use_cross_modal_attn=False,
-        use_complex_proj_attn=False,
-        use_complex_temporal_proj_attn=False,
-        temporal_kernel=5,
-        use_text_headed_attn=False,
-        use_text_headed_complex_attn=False,
-        text_headed_refinement_layers=1,
-        use_dual_complex_text_imag=False,
-        dual_complex_num_layers=2,
-        dual_complex_text_broadcast='mean',
-        dual_complex_output_mode='magnitude',
-        use_identity_complex_ablation=False,
-        use_split_complex_attn=False,
-        use_temporal_diff_complex_attn=False,
-        temporal_diff_padding_mode='replicate',
-        use_rotary_complex_attn=False,
-        rotary_learnable_freq=True,
-        rotary_num_freq_bands=64,
-        use_projected_complex_attn=False,
-        projected_complex_output_mode='magnitude',
-        use_aligned_temporal_diff_attn=False,
-        aligned_residual_weight=0.3,
-        aligned_loss_weight=0.1,
-        use_phase_aware_complex_attn=False,
-        phase_aware_use_temporal_bias=True,
-        phase_aware_output_mode='magnitude',
-        phase_aware_modrelu_bias_init=0.1,
-        use_tapa=False,
-        tapa_theta=1.0,
-        tapa_alpha=0.5,
-        tapa_imag_mode='hilbert',
-        # MoE temporal attention (boundary-aware expert routing)
-        use_moe_temporal_attn=False,
-        moe_num_experts=4,
-        moe_expert_hidden_dim=256,
-        moe_router_hidden_dim=128,
-        moe_top_k=0,
-        moe_use_temporal_diff_routing=True,
-        moe_load_balance_weight=0.01,
     ):
         super().__init__()
 
@@ -226,13 +165,6 @@ class ImageBindModel(nn.Module):
         # spatial attention
         self.spatial_av_attn_layer_ids = spatial_av_attn_layer_ids
         self.sattn_flag = sattn_flag
-        if self.sattn_flag != 'none':
-            print("==> building spatial av layer (spatial attention is True)")
-            self.spatial_av_layers = self._create_spatial_av_layers(
-                spatial_av_attn_layer_ids,
-                audio_embed_dim,
-                vision_embed_dim,
-            )
         # else:
         #     # self.spatial_av_layers = None
         #     print("==> not performing spatial attention")
@@ -240,153 +172,13 @@ class ImageBindModel(nn.Module):
 
         # temporal attention
         self.tattn_flag = tattn_flag
-        # Store variant flags for forward_features_only / temporal_forward dispatch
-        self.use_complex_temporal_attn = use_complex_temporal_attn
-        self.use_dual_stream_temporal_attn = use_dual_stream_temporal_attn
-        self.use_cross_modal_attn = use_cross_modal_attn
-        self.use_complex_proj_attn = use_complex_proj_attn
-        self.use_complex_temporal_proj_attn = use_complex_temporal_proj_attn
-        self.use_text_headed_attn = use_text_headed_attn
-        self.use_text_headed_complex_attn = use_text_headed_complex_attn
-        self.use_dual_complex_text_imag = use_dual_complex_text_imag
-        self.use_identity_complex_ablation = use_identity_complex_ablation
-        self.use_split_complex_attn = use_split_complex_attn
-        self.use_temporal_diff_complex_attn = use_temporal_diff_complex_attn
-        self.use_rotary_complex_attn = use_rotary_complex_attn
-        self.use_projected_complex_attn = use_projected_complex_attn
-        self.use_aligned_temporal_diff_attn = use_aligned_temporal_diff_attn
-        self.use_phase_aware_complex_attn = use_phase_aware_complex_attn
-        self.use_moe_temporal_attn = use_moe_temporal_attn
 
-        if self.tattn_flag:
-            print("==> building temporal attention layers")
-            base_args = (sa_layer_num, xa_layer_num, feat_dim, hid_dim, d_ff,
-                         head_num, dropout, use_adj_in_attn, gamma, bias,
-                         use_mask_in_attn, win_size, norm_flag)
-            if use_phase_aware_complex_attn:
-                self.temporal_av_layer = PhaseAwareComplexAttention(
-                    sa_layer_num=sa_layer_num, xa_layer_num=xa_layer_num,
-                    feat_dim=feat_dim, hid_dim=hid_dim, d_ff=d_ff,
-                    head_num=head_num, dropout=dropout,
-                    use_adj_in_attn=use_adj_in_attn, gamma=gamma, bias=bias,
-                    use_mask_in_attn=use_mask_in_attn, win_size=win_size,
-                    norm_flag=norm_flag,
-                    use_temporal_bias=phase_aware_use_temporal_bias,
-                    imag_mode=tapa_imag_mode,
-                    output_mode=phase_aware_output_mode,
-                    modrelu_bias_init=phase_aware_modrelu_bias_init,
-                    use_tapa=use_tapa, tapa_theta=tapa_theta, tapa_alpha=tapa_alpha,
-                )
-            elif use_projected_complex_attn:
-                self.temporal_av_layer = ProjectedComplexTemporalAttentionModule(
-                    sa_layer_num=sa_layer_num, xa_layer_num=xa_layer_num,
-                    feat_dim=feat_dim, hid_dim=hid_dim, d_ff=d_ff,
-                    head_num=head_num, dropout=dropout,
-                    use_adj_in_attn=use_adj_in_attn, gamma=gamma, bias=bias,
-                    use_mask_in_attn=use_mask_in_attn, win_size=win_size,
-                    norm_flag=norm_flag,
-                    output_mode=projected_complex_output_mode,
-                )
-            elif use_split_complex_attn:
-                self.temporal_av_layer = SplitComplexTemporalAttentionModule(*base_args)
-            elif use_temporal_diff_complex_attn:
-                self.temporal_av_layer = TemporalDiffComplexAttentionModule(
-                    *base_args, padding_mode=temporal_diff_padding_mode)
-            elif use_aligned_temporal_diff_attn:
-                self.temporal_av_layer = AlignedTemporalDiffComplexAttention(
-                    *base_args, residual_weight=aligned_residual_weight,
-                    alignment_loss_weight=aligned_loss_weight)
-            elif use_rotary_complex_attn:
-                self.temporal_av_layer = RotaryComplexTemporalAttentionModule(
-                    *base_args, learnable_freq=rotary_learnable_freq,
-                    num_freq_bands=rotary_num_freq_bands)
-            elif use_identity_complex_ablation:
-                self.temporal_av_layer = IdentityComplexTemporalAttentionModule(
-                    *base_args, output_mode=dual_complex_output_mode)
-            elif use_dual_complex_text_imag:
-                self.temporal_av_layer = DualComplexSelfAttentionWithTextImag(
-                    feat_dim=feat_dim, text_dim=feat_dim,
-                    hid_dim=hid_dim, d_ff=d_ff, n_heads=head_num,
-                    num_layers=dual_complex_num_layers, dropout=dropout,
-                    text_broadcast=dual_complex_text_broadcast,
-                    output_mode=dual_complex_output_mode,
-                )
-            elif use_text_headed_complex_attn:
-                self.temporal_av_layer = TextHeadedComplexTemporalAttention(
-                    feat_dim=feat_dim, text_dim=feat_dim,
-                    hid_dim=hid_dim, dropout=dropout,
-                    num_refinement_layers=text_headed_refinement_layers,
-                )
-            elif use_text_headed_attn:
-                self.temporal_av_layer = TextHeadedTemporalAttention(
-                    feat_dim=feat_dim, text_dim=feat_dim,
-                    hid_dim=hid_dim, dropout=dropout,
-                    use_complex_fusion=True,
-                    num_refinement_layers=text_headed_refinement_layers,
-                )
-            elif use_complex_temporal_proj_attn:
-                self.temporal_av_layer = ComplexTemporalProjectionSelfAttentionModule(
-                    *base_args, temporal_kernel=temporal_kernel)
-            elif use_complex_proj_attn:
-                self.temporal_av_layer = ComplexProjectionSelfAttentionModule(*base_args)
-            elif use_cross_modal_attn:
-                self.temporal_av_layer = ComplexCrossModalAttentionModule(*base_args)
-            elif use_dual_stream_temporal_attn:
-                self.temporal_av_layer = SeparateComplexTemporalAttentionModule(*base_args)
-            elif use_complex_temporal_attn:
-                self.temporal_av_layer = ComplexTemporalAttentionModule(*base_args)
-            elif use_moe_temporal_attn:
-                self.temporal_av_layer = MoETemporalAttentionModule(
-                    feat_dim=feat_dim,
-                    expert_hidden_dim=moe_expert_hidden_dim,
-                    router_hidden_dim=moe_router_hidden_dim,
-                    num_experts=moe_num_experts,
-                    dropout=dropout,
-                    top_k=moe_top_k,
-                    use_temporal_diff_routing=moe_use_temporal_diff_routing,
-                    load_balance_weight=moe_load_balance_weight,
-                    # Self-attention params (reuse temporal attention config)
-                    sa_hid_dim=hid_dim,
-                    sa_ff_dim=d_ff,
-                    sa_head_num=head_num,
-                    sa_layer_num=sa_layer_num,
-                    use_adj_in_attn=use_adj_in_attn,
-                    gamma=gamma,
-                    bias=bias,
-                    use_mask_in_attn=use_mask_in_attn,
-                    win_size=win_size,
-                    norm_flag=norm_flag,
-                )
-            else:
-                self.temporal_av_layer = TemporalAttentionModule(*base_args)
+        print("==> building temporal attention layers")
+        base_args = (sa_layer_num, xa_layer_num, feat_dim, hid_dim, d_ff,
+                     head_num, dropout, use_adj_in_attn, gamma, bias,
+                     use_mask_in_attn, win_size, norm_flag)
+        self.temporal_av_layer = TemporalAttentionModule(*base_args)
 
-            # iHSV: separate temporal self-attention for imaginary visual features
-            #
-            # DISABLED: this paired module was wasteful — it ran SA on a duplicated
-            # audio stream (a_sa_blocks) whose output was discarded in forward(),
-            # and it gave iHSV a *second* SA pass on top of the standalone
-            # ihsv_temporal_attn built in the trainer (asymmetric vs the other
-            # streams). Keeping just `ihsv_temporal_attn` gives the clean
-            # "1 SA block per stream" architecture (RGB / iHSV / mel / phase).
-            # from config import cfg as _cfg
-            # if _cfg.IHSV.ENABLED:
-            #     print("==> building iHSV imaginary vision temporal attention layer")
-            #     self.temporal_imag_vision_layer = TemporalAttentionModule(*base_args)
-            from config import cfg as _cfg
-
-            # DEPTH: separate temporal self-attention for depth features
-            if _cfg.DEPTH.ENABLED:
-                print("==> building DEPTH temporal attention layer")
-                self.temporal_depth_layer = TemporalAttentionModule(*base_args)
-
-        # task-residual text learner
-        self.text_tune_flag = text_tune_flag
-        if self.text_tune_flag:
-            print("==> building text projection tuning layers")
-            # self.task_res_text_learner = nn.Linear(text_embed_dim, feat_dim, bias=True)
-            self.task_res_text_learner = nn.Linear(text_embed_dim, feat_dim, bias=False)
-            # self.task_res_alpha = nn.Parameter(torch.FloatTensor([0.])) # or torch.FloatTensor(torch.-inf)
-            self.task_res_alpha = nn.Parameter(torch.FloatTensor([float('-inf')])) # or torch.FloatTensor(torch.-inf)
 
     def _create_spatial_av_layers(
         self,
@@ -763,12 +555,6 @@ class ImageBindModel(nn.Module):
         if has_vision_imag:
             vision_imag_value = inputs.pop(ModalityType.VISION_IMAG)
 
-        # DEPTH: extract depth input before main loop (uses its own depth encoder)
-        has_depth = ModalityType.DEPTH in inputs
-        depth_value = None
-        if has_depth:
-            depth_value = inputs.pop(ModalityType.DEPTH)
-
         for modality_key, modality_value in inputs.items():
             reduce_list = (
                 modality_value.ndim >= 5
@@ -821,13 +607,6 @@ class ImageBindModel(nn.Module):
             if reduce_flag.get(text_modality_key, False):
                 text_modality_value = text_modality_value.reshape(B, S, -1)
                 # text_modality_value = text_modality_value.mean(dim=1)
-            # outputs[text_modality_key] = text_modality_value # [46/67 + 1, 1024]
-            #! learnable text projection
-            if self.text_tune_flag:
-                # print("==> performing text projetion tuning")
-                # pdb.set_trace()
-                text_modality_value = text_modality_value + torch.sigmoid(self.task_res_alpha) * self.task_res_text_learner(text_modality_value)
-                # pdb.set_trace()
             # text_modality_value = text_modality_value + 0.5 * self.task_res_text_learner(text_modality_value) # fixed version
 
 
@@ -952,55 +731,9 @@ class ImageBindModel(nn.Module):
             )
             if vision_imag_value.ndim >= 5:
                 imag_vision_modality_value = imag_vision_modality_value.reshape(B, S, -1)
-            # iHSV: temporal SA is now applied in the trainer via
-            # `ihsv_temporal_attn` (one SA block, single-stream). The previous
-            # paired `temporal_imag_vision_layer` was removed — it doubled iHSV
-            # depth and wasted weights on a duplicated, discarded audio path.
-            # if self.tattn_flag and hasattr(self, 'temporal_imag_vision_layer'):
-            #     _, imag_vision_modality_value = self.temporal_imag_vision_layer(
-            #         audio_modality_value.detach(), imag_vision_modality_value
-            #     )
-
-        #! DEPTH: process depth through ImageBind's depth encoder
-        depth_modality_value = None
-        if has_depth and depth_value is not None:
-            depth_modality_key = ModalityType.DEPTH
-            dv = depth_value
-            if dv.ndim >= 4 and dv.shape[1] > 1 and dv.ndim == 5:
-                # [B, S, 1, 224, 224] -> [B*S, 1, 224, 224]
-                dv = dv.reshape(B * S, *dv.shape[2:])
-            elif dv.ndim == 4 and dv.shape[0] > 1:
-                # Already [B*S, 1, 224, 224] — no reshape needed
-                pass
-            # Use depth preprocessor, trunk, head, postprocessor
-            dv_preprocessed = self.modality_preprocessors[depth_modality_key](
-                **{depth_modality_key: dv}
-            )
-            dv_trunk_inputs = dv_preprocessed['trunk']
-            dv_head_inputs = dv_preprocessed['head']
-            dv_tokens = dv_trunk_inputs['tokens']
-            if self.modality_trunks[depth_modality_key].pre_transformer_layer:
-                dv_tokens = self.modality_trunks[depth_modality_key].pre_transformer_layer(dv_tokens)
-            for blk in self.modality_trunks[depth_modality_key].blocks:
-                dv_tokens = blk(dv_tokens, attn_mask=None)
-            if self.modality_trunks[depth_modality_key].post_transformer_layer:
-                dv_tokens = self.modality_trunks[depth_modality_key].post_transformer_layer(dv_tokens)
-            depth_modality_value = self.modality_heads[depth_modality_key](
-                dv_tokens, **dv_head_inputs
-            )
-            depth_modality_value = self.modality_postprocessors[depth_modality_key](
-                depth_modality_value
-            )
-            if depth_value.ndim >= 5:
-                depth_modality_value = depth_modality_value.reshape(B, S, -1)
-            # DEPTH: own temporal self-attention layer
-            if self.tattn_flag and hasattr(self, 'temporal_depth_layer'):
-                _, depth_modality_value = self.temporal_depth_layer(
-                    audio_modality_value.detach(), depth_modality_value
-                )
 
         #! learnable temporal audio-vision attention
-        if self.tattn_flag and has_audio and has_vision:
+        if has_audio and has_vision:
             audio_modality_value, vision_modality_value = self.temporal_av_layer(
                 audio_modality_value, vision_modality_value
             )
@@ -1017,149 +750,8 @@ class ImageBindModel(nn.Module):
             outputs[vision_modality_key] = vision_modality_value
         if imag_vision_modality_value is not None:
             outputs[ModalityType.VISION_IMAG] = imag_vision_modality_value
-        if depth_modality_value is not None:
-            outputs[ModalityType.DEPTH] = depth_modality_value
 
         return outputs
-
-    @torch.no_grad()
-    def encode_backbone(self, inputs):
-        """
-        Run the frozen backbone only — preprocessors, transformer trunks, heads, postprocessors.
-        Returns raw features BEFORE temporal_av_layer.
-
-        Used for feature pre-extraction: call once per sample and cache to disk.
-        Only supports sattn_flag='none' (no interleaved spatial attention).
-
-        Returns:
-            dict with keys 'audio' [B,T,1024], 'vision' [B,T,1024], 'text' [K,1024]
-        """
-        assert self.sattn_flag == 'none', (
-            "encode_backbone() requires sattn_flag='none'; "
-            "spatial attention is interleaved inside backbone blocks and cannot be split."
-        )
-
-        inputs_temp = {}
-        reduce_flag = {}
-        B, S = None, None
-
-        for modality_key, modality_value in inputs.items():
-            reduce_list = modality_value.ndim >= 5
-            if reduce_list:
-                B, S = modality_value.shape[:2]
-                modality_value = modality_value.reshape(B * S, *modality_value.shape[2:])
-                reduce_flag[modality_key] = True
-            else:
-                reduce_flag[modality_key] = False
-            if modality_value is not None:
-                modality_value = self.modality_preprocessors[modality_key](
-                    **{modality_key: modality_value}
-                )
-                inputs_temp[modality_key] = modality_value
-
-        # --- Text backbone ---
-        text_modality_key = 'text'
-        text_trunk_inputs = inputs_temp[text_modality_key]['trunk']
-        text_head_inputs = inputs_temp[text_modality_key]['head']
-        text_tokens = text_trunk_inputs['tokens']
-        if self.modality_trunks[text_modality_key].pre_transformer_layer:
-            text_tokens = self.modality_trunks[text_modality_key].pre_transformer_layer(text_tokens)
-        for blk in self.modality_trunks[text_modality_key].blocks:
-            text_tokens = blk(text_tokens, attn_mask=text_trunk_inputs['attn_mask'])
-        if self.modality_trunks[text_modality_key].post_transformer_layer:
-            text_tokens = self.modality_trunks[text_modality_key].post_transformer_layer(text_tokens)
-        text_val = self.modality_heads[text_modality_key](text_tokens, **text_head_inputs)
-        text_val = self.modality_postprocessors[text_modality_key](text_val)
-        if reduce_flag.get(text_modality_key, False):
-            text_val = text_val.reshape(B, S, -1)
-
-        # --- Audio backbone ---
-        audio_modality_key = 'audio'
-        audio_trunk_inputs = inputs_temp[audio_modality_key]['trunk']
-        audio_head_inputs = inputs_temp[audio_modality_key]['head']
-        audio_tokens = audio_trunk_inputs['tokens']
-        if self.modality_trunks[audio_modality_key].pre_transformer_layer:
-            audio_tokens = self.modality_trunks[audio_modality_key].pre_transformer_layer(audio_tokens)
-        for blk in self.modality_trunks[audio_modality_key].blocks:
-            audio_tokens = blk(audio_tokens, attn_mask=None)
-        if self.modality_trunks[audio_modality_key].post_transformer_layer:
-            audio_tokens = self.modality_trunks[audio_modality_key].post_transformer_layer(audio_tokens)
-        audio_val = self.modality_heads[audio_modality_key](audio_tokens, **audio_head_inputs)
-        audio_val = self.modality_postprocessors[audio_modality_key](audio_val)
-        if reduce_flag.get(audio_modality_key, False):
-            audio_val = audio_val.reshape(B, S, -1)
-
-        # --- Vision backbone ---
-        vision_modality_key = 'vision'
-        vision_trunk_inputs = inputs_temp[vision_modality_key]['trunk']
-        vision_head_inputs = inputs_temp[vision_modality_key]['head']
-        vision_tokens = vision_trunk_inputs['tokens']
-        if self.modality_trunks[vision_modality_key].pre_transformer_layer:
-            vision_tokens = self.modality_trunks[vision_modality_key].pre_transformer_layer(vision_tokens)
-        for blk in self.modality_trunks[vision_modality_key].blocks:
-            vision_tokens = blk(vision_tokens, attn_mask=None)
-        if self.modality_trunks[vision_modality_key].post_transformer_layer:
-            vision_tokens = self.modality_trunks[vision_modality_key].post_transformer_layer(vision_tokens)
-        vision_val = self.modality_heads[vision_modality_key](vision_tokens, **vision_head_inputs)
-        vision_val = self.modality_postprocessors[vision_modality_key](vision_val)
-        if reduce_flag.get(vision_modality_key, False):
-            vision_val = vision_val.reshape(B, S, -1)
-
-        return {'audio': audio_val, 'vision': vision_val, 'text': text_val}
-
-    def temporal_forward(self, audio_raw, visual_raw, text_raw=None):
-        """
-        Run only the trainable temporal attention on pre-computed backbone features.
-        This is the counterpart to encode_backbone() — together they reproduce forward().
-
-        Args:
-            audio_raw:  [B, T, 1024] backbone audio features
-            visual_raw: [B, T, 1024] backbone visual features
-            text_raw:   [K, 1024]   backbone text features (required for text-headed variants)
-
-        Returns:
-            audio_feas:  [B, T, 1024]
-            visual_feas: [B, T, 1024]
-            text_feas:   [K, 1024]  (modified by text_tune if enabled, else unchanged)
-        """
-        audio_val = audio_raw
-        visual_val = visual_raw
-        text_val = text_raw
-
-        # Trainable text projection (applied before temporal attention uses text)
-        if self.text_tune_flag and text_val is not None:
-            text_val = text_val + torch.sigmoid(self.task_res_alpha) * self.task_res_text_learner(text_val)
-
-        if self.tattn_flag:
-            if self.use_projected_complex_attn or self.use_split_complex_attn or self.use_identity_complex_ablation:
-                audio_val, visual_val = self.temporal_av_layer(audio_val, visual_val)
-            elif self.use_dual_complex_text_imag:
-                audio_val, visual_val = self.temporal_av_layer(audio_val, visual_val, text_val)
-            elif self.use_text_headed_attn or self.use_text_headed_complex_attn:
-                audio_val, visual_val, _ = self.temporal_av_layer(audio_val, visual_val, text_val)
-            elif self.use_aligned_temporal_diff_attn:
-                if self.training:
-                    audio_val, visual_val, _, _ = self.temporal_av_layer(
-                        audio_val, visual_val, return_losses=True, return_explainability=True)
-                else:
-                    audio_val, visual_val, _ = self.temporal_av_layer(
-                        audio_val, visual_val, return_losses=False, return_explainability=True)
-            elif self.use_phase_aware_complex_attn:
-                audio_val, visual_val, _ = self.temporal_av_layer(
-                    audio_val, visual_val, return_phase_info=True)
-            elif self.use_moe_temporal_attn:
-                # MoE: return routing info during training for load-balance loss
-                audio_val, visual_val = self.temporal_av_layer(
-                    audio_val, visual_val, return_routing_info=False)
-            else:
-                # Standard TemporalAttentionModule
-                result = self.temporal_av_layer(audio_val, visual_val, return_attn_weights=True)
-                if len(result) == 3:
-                    audio_val, visual_val, _ = result
-                else:
-                    audio_val, visual_val = result
-
-        return audio_val, visual_val, text_val
 
 
 def imagebind_huge(
@@ -1183,49 +775,6 @@ def imagebind_huge(
     win_size=4,
     norm_flag=None,
     # text tuning
-    text_tune_flag=False,
-    # complex temporal attention variants
-    use_complex_temporal_attn=False,
-    use_dual_stream_temporal_attn=False,
-    use_cross_modal_attn=False,
-    use_complex_proj_attn=False,
-    use_complex_temporal_proj_attn=False,
-    temporal_kernel=5,
-    use_text_headed_attn=False,
-    use_text_headed_complex_attn=False,
-    text_headed_refinement_layers=1,
-    use_dual_complex_text_imag=False,
-    dual_complex_num_layers=2,
-    dual_complex_text_broadcast='mean',
-    dual_complex_output_mode='magnitude',
-    use_identity_complex_ablation=False,
-    use_split_complex_attn=False,
-    use_temporal_diff_complex_attn=False,
-    temporal_diff_padding_mode='replicate',
-    use_rotary_complex_attn=False,
-    rotary_learnable_freq=True,
-    rotary_num_freq_bands=64,
-    use_projected_complex_attn=False,
-    projected_complex_output_mode='magnitude',
-    use_aligned_temporal_diff_attn=False,
-    aligned_residual_weight=0.3,
-    aligned_loss_weight=0.1,
-    use_phase_aware_complex_attn=False,
-    phase_aware_use_temporal_bias=True,
-    phase_aware_output_mode='magnitude',
-    phase_aware_modrelu_bias_init=0.1,
-    use_tapa=False,
-    tapa_theta=1.0,
-    tapa_alpha=0.5,
-    tapa_imag_mode='hilbert',
-    # MoE temporal attention (boundary-aware expert routing)
-    use_moe_temporal_attn=False,
-    moe_num_experts=4,
-    moe_expert_hidden_dim=256,
-    moe_router_hidden_dim=128,
-    moe_top_k=0,
-    moe_use_temporal_diff_routing=True,
-    moe_load_balance_weight=0.01,
 ):
     model = ImageBindModel(
         vision_embed_dim=1280,
@@ -1255,50 +804,6 @@ def imagebind_huge(
         use_mask_in_attn=use_mask_in_attn,
         win_size=win_size,
         norm_flag=norm_flag,
-        # text residual tuning
-        text_tune_flag=text_tune_flag,
-        # complex temporal attention variants
-        use_complex_temporal_attn=use_complex_temporal_attn,
-        use_dual_stream_temporal_attn=use_dual_stream_temporal_attn,
-        use_cross_modal_attn=use_cross_modal_attn,
-        use_complex_proj_attn=use_complex_proj_attn,
-        use_complex_temporal_proj_attn=use_complex_temporal_proj_attn,
-        temporal_kernel=temporal_kernel,
-        use_text_headed_attn=use_text_headed_attn,
-        use_text_headed_complex_attn=use_text_headed_complex_attn,
-        text_headed_refinement_layers=text_headed_refinement_layers,
-        use_dual_complex_text_imag=use_dual_complex_text_imag,
-        dual_complex_num_layers=dual_complex_num_layers,
-        dual_complex_text_broadcast=dual_complex_text_broadcast,
-        dual_complex_output_mode=dual_complex_output_mode,
-        use_identity_complex_ablation=use_identity_complex_ablation,
-        use_split_complex_attn=use_split_complex_attn,
-        use_temporal_diff_complex_attn=use_temporal_diff_complex_attn,
-        temporal_diff_padding_mode=temporal_diff_padding_mode,
-        use_rotary_complex_attn=use_rotary_complex_attn,
-        rotary_learnable_freq=rotary_learnable_freq,
-        rotary_num_freq_bands=rotary_num_freq_bands,
-        use_projected_complex_attn=use_projected_complex_attn,
-        projected_complex_output_mode=projected_complex_output_mode,
-        use_aligned_temporal_diff_attn=use_aligned_temporal_diff_attn,
-        aligned_residual_weight=aligned_residual_weight,
-        aligned_loss_weight=aligned_loss_weight,
-        use_phase_aware_complex_attn=use_phase_aware_complex_attn,
-        phase_aware_use_temporal_bias=phase_aware_use_temporal_bias,
-        phase_aware_output_mode=phase_aware_output_mode,
-        phase_aware_modrelu_bias_init=phase_aware_modrelu_bias_init,
-        use_tapa=use_tapa,
-        tapa_theta=tapa_theta,
-        tapa_alpha=tapa_alpha,
-        tapa_imag_mode=tapa_imag_mode,
-        # MoE temporal attention
-        use_moe_temporal_attn=use_moe_temporal_attn,
-        moe_num_experts=moe_num_experts,
-        moe_expert_hidden_dim=moe_expert_hidden_dim,
-        moe_router_hidden_dim=moe_router_hidden_dim,
-        moe_top_k=moe_top_k,
-        moe_use_temporal_diff_routing=moe_use_temporal_diff_routing,
-        moe_load_balance_weight=moe_load_balance_weight,
     )
 
     def initialize_imagebind_weights(model):

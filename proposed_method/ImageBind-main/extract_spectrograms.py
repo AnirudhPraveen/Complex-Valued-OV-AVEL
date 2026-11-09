@@ -11,7 +11,7 @@ Each file is named: <split>_<category>_<vid>_t<segment>.npy
 
 Usage:
     python extract_spectrograms.py --output_dir ./spectrograms
-    python extract_spectrograms.py --output_dir ./spectrograms --dataset ave
+    python extract_spectrograms.py --output_dir ./spectrograms --dataset ave_ov
 """
 
 import os
@@ -99,20 +99,16 @@ def extract_from_audio(audio_path, sample_rate=16000, num_mel_bins=128, target_l
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--output_dir', type=str, default='./spectrograms')
-    parser.add_argument('--dataset', type=str, default='ovavel', choices=['ovavel', 'ave', 'ave_ov'])
+    parser.add_argument('--dataset', type=str, default='ovavel', choices=['ovavel', 'ave_ov'])
     parser.add_argument('--splits', type=str, nargs='+', default=['train', 'val', 'test'])
     args = parser.parse_args()
 
-    # Dataset paths
-    if args.dataset == 'ovavel':
-        data_base_dir = cfg_paths._OVAVEL_DATA
-        meta_csv = os.path.join(cfg_paths._OVAVEL_META, "ovave_dataset_meta.csv")
-    elif args.dataset == 'ave':
-        data_base_dir = cfg_paths._AVE_DIR
-        meta_csv = os.path.join(cfg_paths._AVE_DIR, "ave_dataset_meta_combined.csv")
-    elif args.dataset == 'ave_ov':
-        data_base_dir = cfg_paths._AVE_DIR
-        meta_csv = os.path.join(cfg_paths._AVE_DIR, "ave_ov_dataset_meta.csv")
+    # Dataset paths come from config.py (OVAVEL_DATASET selects the dataset)
+    os.environ['OVAVEL_DATASET'] = args.dataset
+    import importlib
+    importlib.reload(cfg_paths)
+    data_base_dir = cfg_paths.cfg.DATA_BASE_DIR
+    meta_csv = cfg_paths.cfg.META_CSV_PATH
 
     # Create output dirs
     for subdir in ['magnitude', 'phase', 'phase_if']:
