@@ -86,7 +86,7 @@ If your data lives elsewhere, symlink it or set `OVAVEL_DATA_DIR` (OV-AVEBench),
 bash run_complex_fusion.sh
 ```
 
-This trains our 4-stream complex-fusion model on OV-AVEBench (Adam, lr 5e-5, batch size 32, 5 epochs). It keeps the best epoch by (Acc + Seg-F1 + Eve-F1)/3 on the *total* split, evaluates it on the **seen** (close), **unseen** (open) and **total** test splits, and prints a results table. Outputs go to `ExpResults/<dataset>/<run>/`.
+This trains our 4-stream complex-fusion model on OV-AVEBench (Adam, lr 5e-5, batch size 32, 5 epochs). It keeps the best epoch by (Acc + Seg-F1 + Eve-F1)/3 on the *total* split, evaluates it on the **seen** (close), **unseen** (open) and **total** test splits, and prints a results table. Outputs go to `ExpResults/<dataset>/<run>_seed<SEED>/`.
 
 The script is controlled by environment variables:
 
@@ -122,7 +122,7 @@ bash run_cross_dataset.sh ExpResults/ovavel/4stream_complex_seed123/train/task_F
 bash run_cross_dataset.sh ExpResults/ave_ov/4stream_complex_seed123/train/task_FullySupervised_best_model.pth.tar ovavel
 ```
 
-**Evaluating a checkpoint only:**
+**Evaluating a checkpoint only.** `config.py` defaults to the 4-stream complex model; for any other checkpoint, first export the matching config (e.g. `STREAMS=2 FUSION=real source scripts/model_config.sh && export CFG_OVERRIDES_JSON`), and set `OVAVEL_DATASET` for AVE-OV:
 
 ```bash
 python train_complex_fusion.py --evaluate --model eval --seed 123 \
